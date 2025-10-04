@@ -178,22 +178,25 @@ def fetch_job_from_redis():
         logging.error(f"Raw response from Redis: {response.text if 'response' in locals() else 'No response'}")
         return None
 
-def submit_result_to_worker(chat_id, video_path, frame_path):
-    """Uploads the final video and a frame to the worker."""
+# REPLACE your existing submit_result_to_worker function with this one
+def submit_result_to_worker(chat_id, video_path, frame_path, messages_to_delete):
+    """Uploads the final video, a frame, and the list of message IDs to the worker."""
     url = f"{WORKER_PUBLIC_URL}/submit-result"
     logging.info(f"Submitting result for chat_id {chat_id} to worker...")
     try:
         with open(frame_path, "rb") as image_file, open(video_path, 'rb') as video_file:
             image_data = base64.b64encode(image_file.read()).decode('utf-8')
             
-            # <-- NEW DEBUG LOG
-            # This confirms that the frame data is not empty before sending.
             logging.info(f"Frame data prepared for upload. Size: {len(image_data)} characters.")
 
             files = {
                 'video': ('final_video.mp4', video_file, 'video/mp4'),
                 'image_data': (None, image_data),
-                'chat_id': (None, str(chat_id))
+                'chat_id': (None, str(chat_id)),
+                
+                # --- THIS IS THE REQUIRED FIX ---
+                # Add the list of message IDs, serialized as a JSON string.
+                'messages_to_delete': (None, json.dumps(messages_to_delete))
             }
             response = requests.post(url, files=files, timeout=60)
             response.raise_for_status()
@@ -202,7 +205,7 @@ def submit_result_to_worker(chat_id, video_path, frame_path):
     except requests.exceptions.RequestException as e:
         logging.error(f"Error uploading result to worker: {e}")
         if 'response' in locals():
-            logging.error(f"Worker response: {response.text}") # <-- MORE DETAIL ON ERROR
+            logging.error(f"Worker response: {response.text}")
         return False
 
 # --- Core Processing Logic (Adapted from original script) ---
@@ -347,6 +350,10 @@ def process_video_job(job_data):
     """The main video creation logic for a single job."""
     chat_id = job_data['chat_id']
     job_id = job_data['job_id']
+    # --- THIS IS THE FIRST PART OF THE FIX ---
+    # Get the list of message IDs from the job data.
+    messages_to_delete = job_data.get("messages_to_delete", [])
+    
     logging.info(f"Starting processing for job_id: {job_id}")
 
     files_to_clean = []
@@ -364,63 +371,44 @@ def process_video_job(job_data):
         caption_image_path, _ = create_caption_image(job_data['caption_text'], job_id)
         files_to_clean.append(caption_image_path)
 
-        # 4. Run FFmpeg
+        # 4. Run FFmpeg (This entire block is correct and remains unchanged)
         output_filepath = os.path.join(OUTPUT_PATH, f"output_{job_id}.mp4")
-        
         scale_ratio = COMP_WIDTH / media_w
         scaled_media_h = int(media_h * scale_ratio)
         media_y_pos = int((COMP_HEIGHT / 2 - scaled_media_h / 2) + MEDIA_Y_OFFSET)
-
         command = ['ffmpeg', '-y', '-f', 'lavfi', '-i', f'color=c={BACKGROUND_COLOR}:s={COMP_SIZE_STR}:d={final_duration}']
         if media_type == 'image':
             command.extend(['-loop', '1', '-t', str(final_duration)])
         command.extend(['-i', media_path, '-i', caption_image_path])
-
-        # --- CORRECTED SEQUENTIAL FADE LOGIC ---
-        
-        # 1. Create the base scene with the media placed on the background
         filter_parts = [
             f"[1:v]scale={COMP_WIDTH}:-1,setpts=PTS-STARTPTS[scaled_media]",
             f"[0:v][scaled_media]overlay=(W-w)/2:{media_y_pos}[base_scene]"
         ]
-        
-        # Use a variable to track the current state of the video stream
         current_scene_label = "base_scene"
         final_output_label = "final_v"
-
         if job_data['apply_fade']:
-            # 2. Apply the FIRST fade layer (for the media) on top of the base scene
             filter_parts.extend([
                 f"color=c=black:s={COMP_SIZE_STR}:d={final_duration},format=rgba,fade=t=out:st=0:d={MEDIA_FADE_DURATION}[media_fade_layer]",
                 f"[{current_scene_label}][media_fade_layer]overlay=0:0[scene_after_media_fade]"
             ])
-            current_scene_label = "scene_after_media_fade" # Update our current scene
-
-            # 3. Overlay the TEXT on top of the already-fading scene
+            current_scene_label = "scene_after_media_fade"
             filter_parts.append(
                 f"[{current_scene_label}][2:v]overlay=(W-w)/2:(H-h)/2[scene_with_text]"
             )
-            current_scene_label = "scene_with_text" # Update again
-
-            # 4. Apply the SECOND fade layer (for the caption) on top of EVERYTHING
+            current_scene_label = "scene_with_text"
             filter_parts.extend([
                 f"color=c=black:s={COMP_SIZE_STR}:d={final_duration},format=rgba,fade=t=out:st=0:d={CAPTION_FADE_DURATION}[caption_fade_layer]",
                 f"[{current_scene_label}][caption_fade_layer]overlay=0:0[{final_output_label}]"
             ])
         else:
-            # If no fade, just overlay the text and we're done
             filter_parts.append(
                 f"[{current_scene_label}][2:v]overlay=(W-w)/2:(H-h)/2[{final_output_label}]"
             )
-
-        # --- END OF FILTER LOGIC ---
-        
         filter_complex = ";".join(filter_parts)
         map_args = ['-map', f'[{final_output_label}]']
         if media_type == 'video':
             filter_complex += ";[1:a]asetpts=PTS-STARTPTS[final_a]"
             map_args.extend(['-map', '[final_a]'])
-        
         command.extend([
             '-filter_complex', filter_complex, *map_args,
             '-c:v', 'libx264',
@@ -430,20 +418,21 @@ def process_video_job(job_data):
             '-pix_fmt', 'yuv420p',
             output_filepath
         ])
-        
         result = subprocess.run(command, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
             logging.error(f"FFMPEG STDERR: {result.stderr}")
             raise subprocess.CalledProcessError(result.returncode, command, stderr=result.stderr)
-        
         logging.info(f"FFmpeg processing finished for job {job_id}.")
         files_to_clean.append(output_filepath)
 
-        # Steps 5 & 6 remain the same
+        # Step 5
         frame_path = extract_frame_from_video(output_filepath, final_duration, job_id)
         if not frame_path: raise ValueError("Frame extraction failed.")
         files_to_clean.append(frame_path)
-        submit_result_to_worker(chat_id, output_filepath, frame_path)
+        
+        # --- THIS IS THE SECOND PART OF THE FIX ---
+        # Pass the 'messages_to_delete' list when calling the submit function.
+        submit_result_to_worker(chat_id, output_filepath, frame_path, messages_to_delete)
 
     except Exception as e:
         error_snippet = str(e)[-1000:]
