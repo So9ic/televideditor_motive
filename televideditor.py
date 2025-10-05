@@ -238,7 +238,7 @@ def create_caption_image(text, job_id):
     font_path = f"{CAPTION_FONT}.ttf"
     font = ImageFont.truetype(font_path, CAPTION_FONT_SIZE)
     
-    final_lines = [item for line in padded_text.split('\n') for item in textwrap.wrap(line, width=30, break_long_words=True) or ['']]
+    final_lines = [item for line in padded_text.split('\n') for item in textwrap.wrap(line, width=35, break_long_words=True) or ['']]
     wrapped_text = "\n".join(final_lines)
     
     dummy_draw = ImageDraw.Draw(Image.new('RGB', (0,0)))
