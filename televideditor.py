@@ -412,10 +412,10 @@ def process_video_job(job_data):
         command.extend([
             '-filter_complex', filter_complex, *map_args,
             '-c:v', 'libx264',
-            '-preset', 'veryfast',    # Good quality boost, but less memory-intensive than medium.
-            '-crf', '23',              # Use 23 for veryfast. It's the default and a great baseline.
+            '-preset', 'ultrafast', '-tune', 'zerolatency',
             '-c:a', 'aac', '-b:a', '192k',
-            '-r', str(FPS), '-pix_fmt', 'yuv420p',
+            '-r', str(FPS),
+            '-pix_fmt', 'yuv420p',
             output_filepath
         ])
         result = subprocess.run(command, capture_output=True, text=True, timeout=300)
