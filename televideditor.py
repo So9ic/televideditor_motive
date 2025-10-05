@@ -364,7 +364,7 @@ def process_video_job(job_data):
         command.extend([
             '-filter_complex', filter_complex,
             *map_args,
-            '-ss', '0.7', # <-- THE FIX: Trim 0.5 seconds from the start of the output
+            '-ss', '0.4', # <-- THE FIX: Trim 0.5 seconds from the start of the output
             '-c:v', 'libx264',
             '-preset', 'superfast', '-tune', 'zerolatency',
             '-c:a', 'aac', '-b:a', '192k',
