@@ -279,10 +279,9 @@ def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     serve(app, host='0.0.0.0', port=port)
 
-# --- NEW: Main Bot Logic with "Smart Startup" ---
+# --- Main Bot Logic with "Smart Startup" ---
 if __name__ == '__main__':
     # Step 1: Always start the web server to handle any incoming pings.
-    # It runs in the background and does not block the main logic.
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
     logging.info("Keep-alive web server started in a background thread.")
@@ -296,23 +295,26 @@ if __name__ == '__main__':
     if initial_job:
         # --- PATH A: A REAL JOB IS WAITING ---
         logging.info("Hot Start: Job found immediately. Starting processing.")
-        # Process the job we already fetched.
         process_video_job(initial_job)
         
-        # Continue processing any other jobs in the queue until it's empty.
         while True:
             job = fetch_job_from_redis()
             if job:
                 process_video_job(job)
             else:
                 logging.info("Job queue is empty.")
-                break # Exit the queue-processing loop
+                break 
     else:
         # --- PATH B: NO JOB WAITING (LIKELY WOKEN BY PINGER) ---
-        logging.warning("Cold Start: No initial job found. Assuming woken by pinger. No action needed.")
+        logging.warning("Cold Start: No initial job found. Assuming woken by pinger.")
+        
+        # --- THE CRITICAL FIX ---
+        # This gives the web thread time to successfully respond "200 OK" to the pinger
+        # before the main thread shuts down the container. This keeps the service "healthy."
+        time.sleep(5)
+        # --- END OF FIX ---
 
     # Step 4: Shut down.
-    # This runs after the queue is empty (if there were jobs) or immediately (if woken by ping).
     logging.info("Tasks complete or no initial job found. Requesting shutdown.")
     stop_railway_deployment()
     logging.info("Processor has finished its work and is exiting.")
