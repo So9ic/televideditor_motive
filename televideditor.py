@@ -273,7 +273,7 @@ if __name__ == '__main__':
         logging.warning("Cold Start: No job found. Starting in keep-alive mode.")
         
         # We will shut down after 15 seconds. This gives the pinger ample time.
-        shutdown_timer = threading.Timer(15.0, stop_railway_deployment)
+        shutdown_timer = threading.Timer(70.0, stop_railway_deployment)
         shutdown_timer.start()
         
         # Start the web server as the main process. This keeps the container alive and responsive.
