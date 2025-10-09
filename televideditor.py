@@ -266,34 +266,36 @@ def process_video_job(job_data):
         logging.info(f"Cleaning up files for job {job_id}.")
         cleanup_files(files_to_clean)
 
+
 # --- NEW: Keep-Alive Web Server ("The Receptionist") ---
 app = Flask(__name__)
 @app.route('/')
+@app.route('/health') # Added a dedicated health endpoint for best practice
 def keep_alive():
-    """This endpoint is hit by the pinger to keep the service from sleeping."""
-    return "Bot is awake. Ready for jobs.", 200
+    """Endpoint for both the pinger and Railway's health check."""
+    return "Bot is awake and healthy.", 200
 
 def run_web_server():
     """Runs the Flask app on the port provided by Railway."""
-    # Railway provides the PORT env var; default to 8080 for local testing.
     port = int(os.environ.get("PORT", 8080))
     serve(app, host='0.0.0.0', port=port)
 
-# --- Main Bot Logic with "Smart Startup" ---
+# --- FINAL VERSION: Main Bot Logic ---
 if __name__ == '__main__':
-    # Step 1: Always start the web server to handle any incoming pings.
+    # Step 1: Start the web server in a background thread.
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
     logging.info("Keep-alive web server started in a background thread.")
 
-    # Step 2: Initialize and do ONE immediate check for a job.
+    # Step 2: Initialize and check for a job.
     logging.info("Starting Python Job Processor and checking for an initial job...")
     create_directories()
     initial_job = fetch_job_from_redis()
 
-    # Step 3: Decide what to do based on the check.
+    # Step 3: Decide what to do.
     if initial_job:
-        # --- PATH A: A REAL JOB IS WAITING ---
+        # --- PATH A: REAL JOB ---
+        # The web server will continue running in the background while this processes.
         logging.info("Hot Start: Job found immediately. Starting processing.")
         process_video_job(initial_job)
         
@@ -304,17 +306,21 @@ if __name__ == '__main__':
             else:
                 logging.info("Job queue is empty.")
                 break 
-    else:
-        # --- PATH B: NO JOB WAITING (LIKELY WOKEN BY PINGER) ---
-        logging.warning("Cold Start: No initial job found. Assuming woken by pinger.")
         
-        # --- THE CRITICAL FIX ---
-        # This gives the web thread time to successfully respond "200 OK" to the pinger
-        # before the main thread shuts down the container. This keeps the service "healthy."
-        time.sleep(5)
-        # --- END OF FIX ---
+        # When all jobs are done, we proceed to shutdown.
+        logging.info("All tasks complete. Requesting shutdown.")
+        stop_railway_deployment()
 
-    # Step 4: Shut down.
-    logging.info("Tasks complete or no initial job found. Requesting shutdown.")
-    stop_railway_deployment()
+    else:
+        # --- PATH B: PING ---
+        # We were woken by a ping. Our only job is to stay alive long enough
+        # for the web thread to answer the ping successfully.
+        # A simple sleep is the cleanest way to do this.
+        logging.warning("Cold Start: No initial job found. Staying alive for 5 seconds for pinger.")
+        time.sleep(5)
+        
+        # Now that the ping has been answered, shut down.
+        logging.info("Ping handled successfully. Requesting shutdown.")
+        stop_railway_deployment()
+
     logging.info("Processor has finished its work and is exiting.")
